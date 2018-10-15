@@ -276,6 +276,7 @@ class SDNN:
             d_tmp['V'] = np.zeros((H, W, D, self.total_time)).astype(np.float32)
             d_tmp['K_STDP'] = np.ones((H, W, D)).astype(np.uint8)
             d_tmp['K_inh'] = np.ones((H, W)).astype(np.uint8)
+            d_tmp['last_spike_time'] = -np.ones((H, W, D)).astype(np.int32)
             self.layers.append(d_tmp)
         return
 
@@ -290,6 +291,7 @@ class SDNN:
             self.layers[i]['V'] = np.zeros((H, W, D, self.total_time)).astype(np.float32)
             self.layers[i]['K_STDP'] = np.ones((H, W, D)).astype(np.uint8)
             self.layers[i]['K_inh'] = np.ones((H, W)).astype(np.uint8)
+            self.layers[i]['last_spike_time'] = -np.ones((H, W, D)).astype(np.int32)
         return
 
     # Weights getter
@@ -357,6 +359,7 @@ class SDNN:
                     S, K_inh = self.lateral_inh(S, V, K_inh, blockdim, griddim)
                     self.layers[i]['S'][:, :, :, t] = S
                     self.layers[i]['K_inh'] = K_inh
+                    self.layers[i]['last_spike_time'][S == 1] = t 
 
                 elif self.network_struc[i]['Type'] == 'pool':
                     S = self.pooling(S, s, w, stride, th, blockdim, griddim)
@@ -366,11 +369,11 @@ class SDNN:
                         S, K_inh = self.lateral_inh(S, V, K_inh, blockdim, griddim)
                         self.layers[i]['S'][:, :, :, t] = S
                         self.layers[i]['K_inh'] = K_inh
+                        self.layers[i]['last_spike_time'][S == 1] = t
 
             # STDP learning
             lay = self.learning_layer
-            if self.network_struc[lay]['Type'] == 'conv':
-
+            if self.network_struc[lay]['Type'] == 'conv': 
                 # valid are neurons in the learning layer that can do STDP and that have fired in the current t
                 S = self.layers[lay]['S'][:, :, :, t]  # Output spikes
                 V = self.layers[lay]['V'][:, :, :, t]  # Output voltage
@@ -390,6 +393,8 @@ class SDNN:
                     s = np.pad(ssum, ((H_pad, H_pad), (W_pad, W_pad), (0, 0)), mode='constant')  # Pad the input
                     w = self.weights[lay - 1]
 
+                    s_prev = self.layers[]
+
                     maxval, maxind1, maxind2 = self.get_STDP_idxs(valid, H, W, D, lay)
 
                     blockdim = (self.thds_per_dim, self.thds_per_dim, self.thds_per_dim)
@@ -399,6 +404,8 @@ class SDNN:
 
                     w, K_STDP = self.STDP(S.shape, s, w, K_STDP,
                                           maxval, maxind1, maxind2,
+                                          t, self.layers[lay]['last_spike_time'], 
+                                          t, self.layers[lay - 1]['last_spike_time'],
                                           stride, offset, a_minus, a_plus, blockdim, griddim)
                     self.weights[lay - 1] = w
                     self.layers[lay]['K_STDP'] = K_STDP
@@ -719,7 +726,30 @@ class SDNN:
         d_S.copy_to_host(S_out)
         return S_out
 
-    def STDP(self, S_sz, s, w, K_STDP, maxval, maxind1, maxind2, stride, offset, a_minus, a_plus, blockdim, griddim):
+    def STDP(self, S_sz, s, w, K_STDP, maxval, maxind1, maxind2, curr_time, post_last_spike_time, prev_s, pre_last_spike_time, stride, offset, a_minus, a_plus, blockdim, griddim):
+        """
+            Cuda STDP-Update Kernel call
+            Returns the updated weight and STDP allowed matrix
+        """
+        d_S_sz = cuda.to_device(np.ascontiguousarray(S_sz).astype(np.int32))
+        d_s = cuda.to_device(np.ascontiguousarray(s).astype(np.uint8))
+        d_prev_s = cuda.to_device(np.ascontiguousarray(prev_s).astype(np.uint8))
+        d_w = cuda.to_device(w.astype(np.float32))
+        d_K_STDP = cuda.to_device(K_STDP.astype(np.uint8))
+        d_post_last_spike_time = cuda.to_device(np.ascontiguousarray(post_last_spike_time).astype(np.int8))
+        d_pre_last_spike_time = cuda.to_device(np.ascontiguousarray(pre_last_spike_time).astype(np.int8))
+        w_out = np.empty(d_w.shape, dtype=d_w.dtype)
+        K_STDP_out = np.empty(d_K_STDP.shape, dtype=d_K_STDP.dtype)
+        STDP_learning[griddim, blockdim](d_S_sz, d_s, d_w, d_K_STDP,  # Input arrays
+                      maxval, maxind1, maxind2,  # Indices
+                      curr_time, d_post_last_spike_time,
+                      d_prev_s, d_pre_last_spike_time,
+                      stride, int(offset), a_minus, a_plus)  # Parameters
+        d_w.copy_to_host(w_out)
+        d_K_STDP.copy_to_host(K_STDP_out)
+        return w_out, K_STDP_out
+    
+    def STDP_LDP(self, S_sz, s, w, K_STDP, maxval, maxind1, maxind2, curr_time, post_last_spike_time, stride, offset, a_minus, a_plus, blockdim, griddim):
         """
             Cuda STDP-Update Kernel call
             Returns the updated weight and STDP allowed matrix
@@ -728,10 +758,12 @@ class SDNN:
         d_s = cuda.to_device(np.ascontiguousarray(s).astype(np.uint8))
         d_w = cuda.to_device(w.astype(np.float32))
         d_K_STDP = cuda.to_device(K_STDP.astype(np.uint8))
+        d_post_last_spike_time = cuda.to_device(np.ascontiguousarray(post_last_spike_time).astype(np.int32))
         w_out = np.empty(d_w.shape, dtype=d_w.dtype)
         K_STDP_out = np.empty(d_K_STDP.shape, dtype=d_K_STDP.dtype)
-        STDP_learning[griddim, blockdim](d_S_sz, d_s, d_w, d_K_STDP,  # Input arrays
+        STDP_learning_LDP[griddim, blockdim](d_S_sz, d_s, d_w, d_K_STDP,  # Input arrays
                       maxval, maxind1, maxind2,  # Indices
+                      curr_time, d_post_last_spike_time,
                       stride, int(offset), a_minus, a_plus)  # Parameters
         d_w.copy_to_host(w_out)
         d_K_STDP.copy_to_host(K_STDP_out)

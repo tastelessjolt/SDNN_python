@@ -18,7 +18,7 @@ import time
 def main():
 
     # Flags
-    learn_SDNN = False  # This flag toggles between Learning STDP and classify features
+    learn_SDNN = True  # This flag toggles between Learning STDP and classify features
                         # or just classify by loading pretrained weights for the face/motor dataset
     if learn_SDNN:
         set_weights = False  # Loads the weights from a path (path_set_weigths) and prevents any SDNN learning
