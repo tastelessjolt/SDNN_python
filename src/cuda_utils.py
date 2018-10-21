@@ -1,6 +1,7 @@
 import numpy as np
 from numba import *
 from numba import cuda
+import math
 
 """
     CUDA Kernel implementations 
@@ -58,14 +59,14 @@ def pool(S, s, w, stride, th):
         S[idx, idy, idz] = 0
 
 
-@cuda.jit(argtypes=[int32[:], uint8[:, :, :], float32[:, :, :, :], uint8[:, :, :],
+@cuda.jit(argtypes=[int32[:], uint8[:, :, :, :], float32[:, :, :, :], uint8[:, :, :],
                     float32[:], int16[:], int16[:],
-                    uint32, int32[:, :, :],
+                    uint32,
                     uint32, uint32, float32, float32])
-def STDP_learning(S_sz, s, w, K_STDP,  # Input arrays
+def STDP_learning_LTP(S_sz, s, w, K_STDP,  # Input arrays
                   maxval, maxind1, maxind2,  # Indices
-                  curr_time, post_last_spike_time, # Post Last Spike times
-                  pre_s, pre_last_spike_time, # Prev Layer Spikes and Last Spike times
+                  t,
+                #   curr_time, pre_neuron_spike_times, # Spiking times
                   stride, offset, a_minus, a_plus):  # Parameters
 
     idx, idy, idz = cuda.grid(3)
@@ -89,15 +90,10 @@ def STDP_learning(S_sz, s, w, K_STDP,  # Input arrays
         for k in range(w.shape[2]):
             for j in range(w.shape[1]):
                 for i in range(w.shape[0]):
-                    # For positive STDP (LTP)
-                    spiketime = curr_time if pre_last_spike_time[i, j, k] < 0 else pre_last_spike_time[i, j, k]
-                    dw = s[idx * stride + i, idy * stride + j, k] * a_plus * w[i, j, k, idz] * (1 - w[i, j, k, idz]) * np.exp(-(curr_time - spiketime)*2)
-                    w[i, j, k, idz] += dw
-                    
-                    # For negative STDP (LTD)
-                    spiketime = curr_time if post_last_spike_time[idx * stride + i, idy * stride + j, k] < 0 else post_last_spike_time[idx * stride + i, idy * stride + j, k]
-                    dw = pre_s[i, j, k] * a_minus * w[i, j, k, idz] * (1 - w[i, j, k, idz]) * np.exp(-(curr_time - spiketime)*2)
-                    w[i, j, k, idz] -= dw
+                    for ti in range(t):
+                        dw = s[idx * stride + i, idy * stride + j, k, ti] * a_plus * w[i, j, k, idz] * (1 - w[i, j, k, idz]) 
+                        dw = dw * (math.exp(-(t - ti - 1)/10))
+                        w[i, j, k, idz] += dw
 
         # Turn off the STDP for lateral neurons of the activated neuron in all planes
         for k in range(S_sz[2]):
@@ -113,6 +109,37 @@ def STDP_learning(S_sz, s, w, K_STDP,  # Input arrays
         for j in range(S_sz[1]):
             for i in range(S_sz[0]):
                 K_STDP[i, j, idz] = 0
+
+@cuda.jit(argtypes=[int32[:], uint8[:, :, :, :], float32[:, :, :, :], uint8[:, :, :],
+                    float32[:], int16[:], int16[:],
+                    int32,
+                    uint32, uint32, float32, float32])
+def STDP_learning_LTD(S_sz, s, w, K_STDP,  # Input arrays
+                  maxval, maxind1, maxind2,  # Indices
+                  t,  # Curr time
+                  stride, offset, a_minus, a_plus):  # Parameters
+
+    idx, idy, idz = cuda.grid(3)
+    if idx > S_sz[0] - 1:
+        return
+    if idy > S_sz[1] - 1:
+        return
+    if idz > S_sz[2] - 1:
+        return
+
+    if idx != maxind1[idz] or idy != maxind2[idz]:  # Check if this is the neuron we have to update (correct idx, idy for map idz)
+        return
+
+    if maxval[idz] > 0:
+        # Weights STDP update
+        for k in range(w.shape[2]):
+            for j in range(w.shape[1]):
+                for i in range(w.shape[0]):
+                    for ti in range(t):
+                        input = s[idx * stride + i, idy * stride + j, k, ti]
+                        dw = input * a_minus * w[i, j, k, idz] * (1 - w[i, j, k, idz]) * math.exp(-(t - ti - 1)/10)
+                        w[i, j, k, idz] -= dw
+
 
 @cuda.jit(argtypes=[uint8[:, :, :], float32[:, :, :], uint8[:, :]])
 def lateral_inh(S, V, K_inh):

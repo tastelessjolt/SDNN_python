@@ -56,7 +56,7 @@ class SDNN:
 
     def __init__(self, network_params, weight_params, stdp_params, total_time, DoG_params=None,
                  spike_times_learn=None, spike_times_train=None, spike_times_test=None,
-                 y_train=None, y_test=None, device='GPU'):
+                 y_train=None, y_test=None, device='GPU', tau=5):
         """
             Initialisaition of SDNN
 
@@ -99,7 +99,7 @@ class SDNN:
                 -'DoG_size': An int with the size of the DoG filter window size
                 -'std1': A float with the standard deviation 1 for the DoG filter
                 -'std2': A float with the standard deviation 2 for the DoG filter                  
-                 
+            - tau: For STDP window
         """
 
         # --------------------------- DoG Filter Parameters -------------------#
@@ -148,7 +148,7 @@ class SDNN:
         # --------------------------- CUDA Parameters -------------------#
         self.device = device
         if self.device == 'GPU':
-            self.thds_per_dim = 10  # (Use 8 if doesn't work)
+            self.thds_per_dim = 8  # (Use 8 if doesn't work)
 
         # --------------------------- Input spike times -------------------#
         # Generate Iterators with the full path to the images in each set OR reference the spike times
@@ -174,6 +174,7 @@ class SDNN:
         self.features_train = []
         self.features_test = []
 
+        self.tau = tau
 
 # --------------------------- Initialisation functions ------------------------#
     # Network Structure Initialization
@@ -332,6 +333,7 @@ class SDNN:
         """
 
         # Propagate
+        # accum = 0.0
         for t in range(1, self.total_time):
             for i in range(1, self.learning_layer+1):
 
@@ -359,7 +361,7 @@ class SDNN:
                     S, K_inh = self.lateral_inh(S, V, K_inh, blockdim, griddim)
                     self.layers[i]['S'][:, :, :, t] = S
                     self.layers[i]['K_inh'] = K_inh
-                    self.layers[i]['last_spike_time'][S == 1] = t 
+                    # self.layers[i]['last_spike_time'][S == 1] = t
 
                 elif self.network_struc[i]['Type'] == 'pool':
                     S = self.pooling(S, s, w, stride, th, blockdim, griddim)
@@ -369,7 +371,7 @@ class SDNN:
                         S, K_inh = self.lateral_inh(S, V, K_inh, blockdim, griddim)
                         self.layers[i]['S'][:, :, :, t] = S
                         self.layers[i]['K_inh'] = K_inh
-                        self.layers[i]['last_spike_time'][S == 1] = t
+                        # self.layers[i]['last_spike_time'][S == 1] = t
 
             # STDP learning
             lay = self.learning_layer
@@ -380,6 +382,10 @@ class SDNN:
                 K_STDP = self.layers[lay]['K_STDP']  # Lateral inhibition matrix
                 valid = S*V*K_STDP
 
+                prev_S = self.layers[lay - 1]['S'][:, :, :, t]  # Prev Output spikes
+                prev_K_STDP = self.layers[lay - 1]['K_STDP']  # Lateral inhibition matrix
+                prev_valid = prev_K_STDP * prev_S
+
                 if np.count_nonzero(valid) > 0:
 
                     H, W, D = self.network_struc[lay]['shape']
@@ -389,27 +395,56 @@ class SDNN:
                     a_plus = self.stdp_a_plus[lay]
 
                     s = self.layers[lay - 1]['S'][:, :, :, :t]  # Input spikes
-                    ssum = np.sum(s, axis=3)
-                    s = np.pad(ssum, ((H_pad, H_pad), (W_pad, W_pad), (0, 0)), mode='constant')  # Pad the input
+                    # ssum = np.sum(s, axis=3)
+                    s = np.pad(s, ((H_pad, H_pad), (W_pad, W_pad), (0, 0), (0, 0)), mode='constant')  # Pad the input
                     w = self.weights[lay - 1]
 
-                    s_prev = self.layers[]
+                    # s_prev = self.layers[]
 
                     maxval, maxind1, maxind2 = self.get_STDP_idxs(valid, H, W, D, lay)
+                    # prev_maxval, prev_maxind1, prev_maxind2 = self.get_STDP_idxs(valid, H, W, D, lay - 1)
 
                     blockdim = (self.thds_per_dim, self.thds_per_dim, self.thds_per_dim)
                     griddim = (int(ceil(H / blockdim[0])) if int(ceil(H / blockdim[2])) != 0 else 1,
                                int(ceil(W / blockdim[1])) if int(ceil(W / blockdim[2])) != 0 else 1,
                                int(ceil(D / blockdim[2])) if int(ceil(D / blockdim[2])) != 0 else 1)
 
-                    w, K_STDP = self.STDP(S.shape, s, w, K_STDP,
+                    w, K_STDP = self.STDP_LTP(S.shape, s, w, K_STDP,
                                           maxval, maxind1, maxind2,
-                                          t, self.layers[lay]['last_spike_time'], 
-                                          t, self.layers[lay - 1]['last_spike_time'],
+                                          t,
                                           stride, offset, a_minus, a_plus, blockdim, griddim)
                     self.weights[lay - 1] = w
                     self.layers[lay]['K_STDP'] = K_STDP
+                
+                if np.count_nonzero(prev_valid):
+                    H, W, D = self.network_struc[lay - 1]['shape']
+                    stride = self.network_struc[lay]['stride']
+                    offset = self.offsetSTDP[lay]
+                    a_minus = self.stdp_a_minus[lay]
+                    a_plus = self.stdp_a_plus[lay]
 
+                    s = self.layers[lay]['S'][:, :, :, :t]  # Input spikes
+                    # ssum = np.sum(s, axis=3)
+                    s = np.pad(s, ((H_pad, H_pad), (W_pad, W_pad), (0, 0), (0, 0)), mode='constant')  # Pad the input
+                    w = self.weights[lay - 1]
+
+                    # s_prev = self.layers[]
+
+                    maxval, maxind1, maxind2 = self.get_STDP_idxs(prev_valid, H, W, D, lay - 1)
+                    # prev_maxval, prev_maxind1, prev_maxind2 = self.get_STDP_idxs(valid, H, W, D, lay - 1)
+
+                    blockdim = (self.thds_per_dim, self.thds_per_dim, self.thds_per_dim)
+                    griddim = (int(ceil(H / blockdim[0])) if int(ceil(H / blockdim[2])) != 0 else 1,
+                               int(ceil(W / blockdim[1])) if int(ceil(W / blockdim[2])) != 0 else 1,
+                               int(ceil(D / blockdim[2])) if int(ceil(D / blockdim[2])) != 0 else 1)
+
+                    w, prev_K_STDP = self.STDP_LTD(prev_S.shape, s, w, prev_K_STDP,
+                                          maxval, maxind1, maxind2,
+                                          t, 
+                                          stride, offset, a_minus, a_plus, blockdim, griddim)
+                    # accum += np.sum(np.sum(np.abs(w - self.weights[lay - 1])))
+                    self.weights[lay - 1] = w
+        # print (accum)
     # Train all images in training set
     def train_SDNN(self):
         """
@@ -726,30 +761,26 @@ class SDNN:
         d_S.copy_to_host(S_out)
         return S_out
 
-    def STDP(self, S_sz, s, w, K_STDP, maxval, maxind1, maxind2, curr_time, post_last_spike_time, prev_s, pre_last_spike_time, stride, offset, a_minus, a_plus, blockdim, griddim):
+    def STDP_LTP(self, S_sz, s, w, K_STDP, maxval, maxind1, maxind2, t, stride, offset, a_minus, a_plus, blockdim, griddim):
         """
             Cuda STDP-Update Kernel call
             Returns the updated weight and STDP allowed matrix
         """
         d_S_sz = cuda.to_device(np.ascontiguousarray(S_sz).astype(np.int32))
         d_s = cuda.to_device(np.ascontiguousarray(s).astype(np.uint8))
-        d_prev_s = cuda.to_device(np.ascontiguousarray(prev_s).astype(np.uint8))
         d_w = cuda.to_device(w.astype(np.float32))
         d_K_STDP = cuda.to_device(K_STDP.astype(np.uint8))
-        d_post_last_spike_time = cuda.to_device(np.ascontiguousarray(post_last_spike_time).astype(np.int8))
-        d_pre_last_spike_time = cuda.to_device(np.ascontiguousarray(pre_last_spike_time).astype(np.int8))
         w_out = np.empty(d_w.shape, dtype=d_w.dtype)
         K_STDP_out = np.empty(d_K_STDP.shape, dtype=d_K_STDP.dtype)
-        STDP_learning[griddim, blockdim](d_S_sz, d_s, d_w, d_K_STDP,  # Input arrays
+        STDP_learning_LTP[griddim, blockdim](d_S_sz, d_s, d_w, d_K_STDP,  # Input arrays
                       maxval, maxind1, maxind2,  # Indices
-                      curr_time, d_post_last_spike_time,
-                      d_prev_s, d_pre_last_spike_time,
+                      t,
                       stride, int(offset), a_minus, a_plus)  # Parameters
         d_w.copy_to_host(w_out)
         d_K_STDP.copy_to_host(K_STDP_out)
         return w_out, K_STDP_out
     
-    def STDP_LDP(self, S_sz, s, w, K_STDP, maxval, maxind1, maxind2, curr_time, post_last_spike_time, stride, offset, a_minus, a_plus, blockdim, griddim):
+    def STDP_LTD(self, S_sz, s, w, K_STDP, maxval, maxind1, maxind2, curr_time, stride, offset, a_minus, a_plus, blockdim, griddim):
         """
             Cuda STDP-Update Kernel call
             Returns the updated weight and STDP allowed matrix
@@ -758,12 +789,11 @@ class SDNN:
         d_s = cuda.to_device(np.ascontiguousarray(s).astype(np.uint8))
         d_w = cuda.to_device(w.astype(np.float32))
         d_K_STDP = cuda.to_device(K_STDP.astype(np.uint8))
-        d_post_last_spike_time = cuda.to_device(np.ascontiguousarray(post_last_spike_time).astype(np.int32))
         w_out = np.empty(d_w.shape, dtype=d_w.dtype)
         K_STDP_out = np.empty(d_K_STDP.shape, dtype=d_K_STDP.dtype)
-        STDP_learning_LDP[griddim, blockdim](d_S_sz, d_s, d_w, d_K_STDP,  # Input arrays
+        STDP_learning_LTD[griddim, blockdim](d_S_sz, d_s, d_w, d_K_STDP,  # Input arrays
                       maxval, maxind1, maxind2,  # Indices
-                      curr_time, d_post_last_spike_time,
+                      curr_time,
                       stride, int(offset), a_minus, a_plus)  # Parameters
         d_w.copy_to_host(w_out)
         d_K_STDP.copy_to_host(K_STDP_out)
