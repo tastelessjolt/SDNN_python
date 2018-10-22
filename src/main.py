@@ -48,9 +48,9 @@ def main():
     total_time = 15
     network_params = [{'Type': 'input', 'num_filters': 1, 'pad': (0, 0), 'H_layer': DoG_params['img_size'][1],
                        'W_layer': DoG_params['img_size'][0]},
-                      {'Type': 'conv', 'num_filters': 4, 'filter_size': 5, 'th': 10.},
+                      {'Type': 'conv', 'num_filters': 4, 'filter_size': 5, 'th': 5.},
                       {'Type': 'pool', 'num_filters': 4, 'filter_size': 7, 'th': 0., 'stride': 6},
-                      {'Type': 'conv', 'num_filters': 20, 'filter_size': 17, 'th': 70.},
+                      {'Type': 'conv', 'num_filters': 20, 'filter_size': 17, 'th': 50.},
                       {'Type': 'pool', 'num_filters': 20, 'filter_size': 5, 'th': 0., 'stride': 5},
                       {'Type': 'conv', 'num_filters': 20, 'filter_size': 5, 'th': 1.5}]
 
@@ -58,7 +58,7 @@ def main():
 
     max_learn_iter = [0, 3000, 0, 5000, 0, 6000, 0]
     stdp_params = {'max_learn_iter': max_learn_iter,
-                   'stdp_per_layer': [10, 10, 8, 8, 3, 3],
+                   'stdp_per_layer': [8, 8, 6, 6, 2, 2],
                    'max_iter': sum(max_learn_iter),
                    'a_minus': np.array([0, .003, 0, .0003, 0, .0003], dtype=np.float32),
                    'a_plus': np.array([0, .004, 0, .0004, 0, .0004], dtype=np.float32),
