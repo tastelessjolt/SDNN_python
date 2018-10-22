@@ -50,7 +50,7 @@ def main():
                        'W_layer': DoG_params['img_size'][0]},
                       {'Type': 'conv', 'num_filters': 4, 'filter_size': 5, 'th': 10.},
                       {'Type': 'pool', 'num_filters': 4, 'filter_size': 7, 'th': 0., 'stride': 6},
-                      {'Type': 'conv', 'num_filters': 20, 'filter_size': 17, 'th': 35.},
+                      {'Type': 'conv', 'num_filters': 20, 'filter_size': 17, 'th': 60.},
                       {'Type': 'pool', 'num_filters': 20, 'filter_size': 5, 'th': 0., 'stride': 5},
                       {'Type': 'conv', 'num_filters': 20, 'filter_size': 5, 'th': 2.}]
 
