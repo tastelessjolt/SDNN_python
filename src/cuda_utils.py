@@ -92,7 +92,7 @@ def STDP_learning_LTP(S_sz, s, w, K_STDP,  # Input arrays
                 for i in range(w.shape[0]):
                     for ti in range(t):
                         dw = s[idx * stride + i, idy * stride + j, k, ti] * a_plus * w[i, j, k, idz] * (1 - w[i, j, k, idz]) 
-                        dw = dw * (math.exp(-(t - ti - 1)/5))
+                        dw = dw * (math.exp(-(t - ti - 1)/4))
                         w[i, j, k, idz] += dw
 
         # Turn off the STDP for lateral neurons of the activated neuron in all planes
@@ -137,7 +137,7 @@ def STDP_learning_LTD(S_sz, s, w, K_STDP,  # Input arrays
                 for i in range(w.shape[0]):
                     for ti in range(t):
                         input = s[idx * stride + i, idy * stride + j, k, ti]
-                        dw = input * a_minus * w[i, j, k, idz] * (1 - w[i, j, k, idz]) * math.exp(-(t - ti - 1)/5)
+                        dw = input * a_minus * w[i, j, k, idz] * (1 - w[i, j, k, idz]) * math.exp(-(t - ti - 1)/4)
                         w[i, j, k, idz] -= dw
 
 
